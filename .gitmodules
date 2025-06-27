@@ -7,3 +7,9 @@
 [submodule "thirdparty/cpr"]
 	path = thirdparty/cpr
 	url = https://github.com/libcpr/cpr.git
+[submodule "thirdparty/lua"]
+	path = thirdparty/lua
+	url = https://github.com/lua/lua.git
+[submodule "thirdparty/sol2"]
+	path = thirdparty/sol2
+	url = https://github.com/ThePhD/sol2.git

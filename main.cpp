@@ -2,8 +2,152 @@
 #include "imgui_impl_glfw.h"
 #include "imgui_impl_opengl3.h"
 #include <GLFW/glfw3.h>
+#include <fstream>
+#include <iostream>
+#include <memory>
+#include <string>
+#include <filesystem>
+#include <windows.h>
+#include <tlhelp32.h>
+#include <winnt.h>
+#include "sol/sol.hpp"
+#include "vdf_parser.hpp"
+
+struct Manifest {
+    std::string *name;
+    std::string appid;
+    std::string path;
+};
+const std::string STEAM_PATH = "C:\\Program Files (x86)\\Steam";
+
+void addappid(uint32_t appid) {
+    std::string app_list_path = STEAM_PATH + "\\AppList";
+    if (!std::filesystem::exists(app_list_path)) {
+        std::filesystem::create_directory(app_list_path);
+    }
+
+    int total_files = std::count_if(std::filesystem::directory_iterator(app_list_path), std::filesystem::directory_iterator{}, [](const auto& entry) {
+        return entry.is_regular_file();
+    });
+    std::string app_list_file_path = app_list_path + "\\" + std::to_string(total_files) + ".txt";
+    std::ofstream app_list_file(app_list_file_path);
+    app_list_file << appid;
+    app_list_file.close();
+}
+
+void addHash(uint32_t app_id, std::string hash) {
+    std::ifstream file(STEAM_PATH + "\\config\\config.vdf");
+    auto root = tyti::vdf::read(file);
+    file.close();
+    auto steam = root.childs["Software"]->childs["Valve"]->childs["Steam"];
+
+    if (steam->childs.find("depots") == steam->childs.end()) {
+        steam->childs["depots"] = std::make_shared<tyti::vdf::object>();
+        steam->childs["depots"]->name = "depots";
+    }
+
+     auto depots = steam->childs["depots"];
+    
+    std::string app_id_str = std::to_string(app_id);
+    depots->childs[app_id_str] = std::make_shared<tyti::vdf::object>();
+    depots->childs[app_id_str]->name = app_id_str;
+    depots->childs[app_id_str]->attribs["DecryptionKey"] = hash;
+    
+
+    std::ofstream out_file(STEAM_PATH + "\\config\\config.vdf");
+    tyti::vdf::write(out_file, root);
+    out_file.close();
+
+}
+
+sol::state setup_lua() {
+    sol::state lua{};
+    lua.open_libraries(sol::lib::base);
+
+    auto curr_appid = 0;
+    lua["addappid"] = sol::overload(
+        [&curr_appid](uint32_t appid) {
+            curr_appid = appid;
+            addappid(appid);
+        },
+        [](uint32_t appid, int type, const std::string& hash) {
+            addappid(appid);
+            addHash(appid, hash);
+        }
+    );
+
+    lua.set_function("setManifestid", [&curr_appid](int appid, std::string hash, int arg_3) {
+        auto manifest = "manifests/" + std::to_string(curr_appid) + "/" + std::to_string(appid) + "_" + hash + ".manifest";
+        auto depotcache = STEAM_PATH + "\\depotcache";
+
+        if (!std::filesystem::exists(depotcache)) {
+            std::filesystem::create_directory(depotcache);
+        }
+
+        std::cout << "Copying " << manifest << " to " << depotcache << std::endl;
+        std::filesystem::copy_file(manifest, depotcache + "\\" + std::to_string(appid) + "_" + hash + ".manifest", std::filesystem::copy_options::overwrite_existing);
+    });
+
+    return lua;
+}
+
+sol::state lua = setup_lua();
+
+std::vector<Manifest> get_manifests() {
+    std::vector<Manifest> manifests;
+    std::string manifests_path = "./manifests";
+
+    for (const auto & entry : std::filesystem::directory_iterator(manifests_path)) {
+        std::string path = entry.path().string();
+        std::string appid = entry.path().filename().string();
+        std::cout << appid << std::endl;
+        manifests.push_back({nullptr, appid, path});
+    }
+
+    return manifests;
+}
+
+void install(Manifest manifest) {
+    auto user32_path = STEAM_PATH + "\\user32.dll";
+    if (!std::filesystem::exists(user32_path)) {
+        std::cout << "user32.dll not found in steam path" << std::endl;
+        std::filesystem::copy_file("user32.dll", user32_path, std::filesystem::copy_options::overwrite_existing);
+    }
+
+    DWORD pid = 0;
+    HANDLE hProcessSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    PROCESSENTRY32 pe32;
+    pe32.dwSize = sizeof(PROCESSENTRY32);
+
+    if (!Process32First(hProcessSnapshot, &pe32)) {
+        std::cout << "Failed to retrieve first process info. Error: " << GetLastError() << std::endl;
+        CloseHandle(hProcessSnapshot);
+        return;
+    }
+
+    do {
+        if (_stricmp(pe32.szExeFile, "steam.exe") == 0) {
+            pid = pe32.th32ProcessID;
+            break;
+        }
+    } while (Process32Next(hProcessSnapshot, &pe32));
+    
+    if (pid != 0) {
+        HANDLE hProcess = OpenProcess(PROCESS_TERMINATE, FALSE, pid);
+        if (hProcess != NULL) {
+            std::cout << "Killing Steam process with PID: " << pid << std::endl;
+            TerminateProcess(hProcess, 0);
+            CloseHandle(hProcess);
+        } else {
+            std::cout << "Failed to open process" << std::endl;
+        }
+    }
+
+    lua.script_file(manifest.path + "\\" + manifest.appid + ".lua");
+}
 
 int main() {
+    std::vector<Manifest> manifests = get_manifests();
     if (!glfwInit())
         return 1;
 
@@ -52,9 +196,13 @@ int main() {
         ImGui::SetNextWindowSize(ImVec2(w, h));
         ImGui::SetNextWindowPos(ImVec2(0, 0));
         ImGui::Begin("Steamless", nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove);
-        ImGui::Text("Hello, world!");
+        ImGui::Text("Steamless");
+        for (const auto & manifest : manifests) {
+            if (ImGui::Button(manifest.appid.c_str())) {
+                install(manifest);
+            }
+        }
         ImGui::End();
-
         ImGui::Render();
         int display_w, display_h;
         glfwGetFramebufferSize(window, &display_w, &display_h);
