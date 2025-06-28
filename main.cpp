@@ -11,7 +11,7 @@
 #include <tlhelp32.h>
 #include <winnt.h>
 #include "sol/sol.hpp"
-#include "vdf_parser.hpp"
+#include "KeyValue.hpp"
 
 struct Manifest {
     std::string *name;
@@ -36,28 +36,28 @@ void addappid(uint32_t appid) {
 }
 
 void addHash(uint32_t app_id, std::string hash) {
+    std::cout << "Adding hash for appid: " << app_id << " with hash: " << hash << std::endl;
     std::ifstream file(STEAM_PATH + "\\config\\config.vdf");
-    auto root = tyti::vdf::read(file);
-    file.close();
-    auto steam = root.childs["Software"]->childs["Valve"]->childs["Steam"];
+    std::string content{std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>()};
 
-    if (steam->childs.find("depots") == steam->childs.end()) {
-        steam->childs["depots"] = std::make_shared<tyti::vdf::object>();
-        steam->childs["depots"]->name = "depots";
+    KeyValueRoot kv;
+    kv.Parse(content.c_str());
+    file.close();
+
+    auto& steam = kv["InstallConfigStore"]["Software"]["Valve"]["Steam"];
+    if (steam["depots"].ChildCount() == 0) {
+        steam.AddNode("depots");
     }
 
-     auto depots = steam->childs["depots"];
-    
-    std::string app_id_str = std::to_string(app_id);
-    depots->childs[app_id_str] = std::make_shared<tyti::vdf::object>();
-    depots->childs[app_id_str]->name = app_id_str;
-    depots->childs[app_id_str]->attribs["DecryptionKey"] = hash;
-    
+    if (steam["depots"][std::to_string(app_id).c_str()].ChildCount() == 0) {    
+        steam["depots"].AddNode(std::to_string(app_id).c_str())->Add("DecryptionKey", hash.c_str());
+    } else {
+        std::cout << "Depot already exists for appid: " << app_id << std::endl;
+    }
 
     std::ofstream out_file(STEAM_PATH + "\\config\\config.vdf");
-    tyti::vdf::write(out_file, root);
+    out_file << kv.ToString();
     out_file.close();
-
 }
 
 sol::state setup_lua() {
@@ -79,13 +79,18 @@ sol::state setup_lua() {
     lua.set_function("setManifestid", [&curr_appid](int appid, std::string hash, int arg_3) {
         auto manifest = "manifests/" + std::to_string(curr_appid) + "/" + std::to_string(appid) + "_" + hash + ".manifest";
         auto depotcache = STEAM_PATH + "\\depotcache";
+        auto dest_file = depotcache + "\\" + std::to_string(appid) + "_" + hash + ".manifest";
 
         if (!std::filesystem::exists(depotcache)) {
             std::filesystem::create_directory(depotcache);
         }
+        
+        if (std::filesystem::exists(dest_file)) {
+            std::filesystem::remove(dest_file);
+        }
 
         std::cout << "Copying " << manifest << " to " << depotcache << std::endl;
-        std::filesystem::copy_file(manifest, depotcache + "\\" + std::to_string(appid) + "_" + hash + ".manifest", std::filesystem::copy_options::overwrite_existing);
+        std::filesystem::copy_file(manifest, dest_file);
     });
 
     return lua;
@@ -144,6 +149,9 @@ void install(Manifest manifest) {
     }
 
     lua.script_file(manifest.path + "\\" + manifest.appid + ".lua");
+    std::string command = "start steam://install/" + manifest.appid;
+    system(command.c_str());
+    std::cout << "Finished installing " << manifest.appid << std::endl;
 }
 
 int main() {

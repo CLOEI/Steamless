@@ -58,5 +58,5 @@ add_subdirectory(thirdparty/glfw)
 add_subdirectory(thirdparty/sol2)
 include_directories(include)
 
-add_executable(${PROJECT_NAME} main.cpp ${IMGUI_SOURCES} ${LUA_SOURCES})
+add_executable(${PROJECT_NAME} main.cpp KeyValue.cpp ${IMGUI_SOURCES} ${LUA_SOURCES})
 target_link_libraries(${PROJECT_NAME} PRIVATE glfw OpenGL::GL sol2)
