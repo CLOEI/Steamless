@@ -26,6 +26,19 @@ void addappid(uint32_t appid) {
         std::filesystem::create_directory(app_list_path);
     }
 
+    for (const auto& entry : std::filesystem::directory_iterator(app_list_path)) {
+        if (entry.is_regular_file()) {
+            std::ifstream file(entry.path());
+            std::string content;
+            std::getline(file, content);
+            if (content == std::to_string(appid)) {
+                std::cout << "AppID " << appid << " already exists in " << entry.path().filename() << ", skipping." << std::endl;
+                return;
+            }
+        }
+    }
+
+    // AppID doesn't exist, create new file
     int total_files = std::count_if(std::filesystem::directory_iterator(app_list_path), std::filesystem::directory_iterator{}, [](const auto& entry) {
         return entry.is_regular_file();
     });
@@ -33,6 +46,7 @@ void addappid(uint32_t appid) {
     std::ofstream app_list_file(app_list_file_path);
     app_list_file << appid;
     app_list_file.close();
+    std::cout << "Created new AppID entry: " << app_list_file_path << std::endl;
 }
 
 void addHash(uint32_t app_id, std::string hash) {
@@ -60,6 +74,23 @@ void addHash(uint32_t app_id, std::string hash) {
     out_file.close();
 }
 
+void setManifestid(int curr_appid, int appid, std::string hash) {
+    auto manifest = "manifests/" + std::to_string(curr_appid) + "/" + std::to_string(appid) + "_" + hash + ".manifest";
+    auto depotcache = STEAM_PATH + "\\depotcache";
+    auto dest_file = depotcache + "\\" + std::to_string(appid) + "_" + hash + ".manifest";
+
+    if (!std::filesystem::exists(depotcache)) {
+        std::filesystem::create_directory(depotcache);
+    }
+    
+    if (std::filesystem::exists(dest_file)) {
+        std::filesystem::remove(dest_file);
+    }
+
+    std::cout << "Copying " << manifest << " to " << depotcache << std::endl;
+    std::filesystem::copy_file(manifest, dest_file);
+}
+
 sol::state setup_lua() {
     sol::state lua{};
     lua.open_libraries(sol::lib::base);
@@ -76,23 +107,14 @@ sol::state setup_lua() {
         }
     );
 
-    lua.set_function("setManifestid", [&curr_appid](int appid, std::string hash, int arg_3) {
-        auto manifest = "manifests/" + std::to_string(curr_appid) + "/" + std::to_string(appid) + "_" + hash + ".manifest";
-        auto depotcache = STEAM_PATH + "\\depotcache";
-        auto dest_file = depotcache + "\\" + std::to_string(appid) + "_" + hash + ".manifest";
-
-        if (!std::filesystem::exists(depotcache)) {
-            std::filesystem::create_directory(depotcache);
+    lua["setManifestid"] = sol::overload(
+        [&curr_appid](int appid, std::string hash, int arg_3) {
+            setManifestid(curr_appid, appid, hash);
+        },
+        [&curr_appid](int appid, std::string hash) {
+            setManifestid(curr_appid, appid, hash);
         }
-        
-        if (std::filesystem::exists(dest_file)) {
-            std::filesystem::remove(dest_file);
-        }
-
-        std::cout << "Copying " << manifest << " to " << depotcache << std::endl;
-        std::filesystem::copy_file(manifest, dest_file);
-    });
-
+    );
     return lua;
 }
 
@@ -140,8 +162,9 @@ void install(Manifest manifest) {
     if (pid != 0) {
         HANDLE hProcess = OpenProcess(PROCESS_TERMINATE, FALSE, pid);
         if (hProcess != NULL) {
-            std::cout << "Killing Steam process with PID: " << pid << std::endl;
-            TerminateProcess(hProcess, 0);
+            std::cout << "Closing steam " << pid << std::endl;
+            std::string command = STEAM_PATH + "\\steam.exe -shutdown";
+            system(command.c_str());
             CloseHandle(hProcess);
         } else {
             std::cout << "Failed to open process" << std::endl;
